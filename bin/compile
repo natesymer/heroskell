@@ -1,0 +1,215 @@
+#!/bin/bash
+
+# THESE ARE CONFIGURABLE
+GHC_VERSION="8.0.2"
+HAPPY_VERSION="1.19.5"
+ALEX_VERSION="3.2.1"
+CABAL_INSTALL_VERSION="1.24.0.2"
+GMP_VERSION="6.1.2"
+REINSTALL_DEPENDENCIES=false
+
+# BEGIN BUILDPACK LOGIC
+
+indent() {
+  sed -u 's/^/       /'
+}
+
+bp_log() {
+  echo "-----> $1"
+}
+
+bp_sublog() {
+  echo "       $1"
+}
+
+silently() {
+  ${@} > /dev/null 2>&1
+}
+
+resolve_dir() {
+  if [ ! -d $1 ]; then
+    silently mkdir -p $1
+  fi
+  silently pushd $1
+  pwd
+  silently popd
+}
+
+# Heroku paths
+BUILD_DIR="$(resolve_dir $1)"
+CACHE_DIR="$(resolve_dir $2)"
+ENV_DIR="$(resolve_dir $3)"
+
+# load_env $ENV_PATH "GHC_VERSION"
+load_env() {
+  if [ -f "$1/$2" ]; then
+    export "$2=$(cat $1/$2)"
+  fi
+}
+
+# install_libgmp "6.0.0a" "/app/gmp"
+install_libgmp() {
+  if [ -d "$2" ]; then
+    silently rm -rf "$2"
+  fi
+  
+  local FNAME="gmp-$1.tar.xz"
+  local URL="https://gmplib.org/download/gmp/$FNAME"
+  
+  silently curl -sS -L -O "$URL"
+  silently tar xvfJ "$FNAME"
+
+  silently pushd gmp-*
+  silently mkdir -p "$2"
+  silently ./configure --prefix="$2"
+  silently make install
+  silently popd
+  
+  silently rm "$FNAME"
+  silently rm -rf gmp-*
+}
+
+# install_ghc "8.0.2" "/app/ghc"
+install_ghc() {
+  if [ -d "$2" ]; then
+    silently rm -rf "$2"
+  fi
+  
+  GHC_FILENAME="ghc-$1-x86_64-deb8-linux.tar.xz"
+  GHC_URL="https://www.haskell.org/ghc/dist/$1/$GHC_FILENAME"
+
+  silently curl -sS -L -O "$GHC_URL"
+  silently tar xvfJ "$GHC_FILENAME"
+
+  silently pushd "ghc-$GHC_VERSION"
+  silently mkdir -p "$2"
+  silently ./configure --prefix="$2"
+  silently make install
+  silently rm -rf "$2/share/doc" # ~180MB, we don't need this to slow down restoration of the cache dir.
+  silently popd
+
+  silently rm "$GHC_FILENAME"
+  silently rm -rf "ghc-$GHC_VERSION"
+}
+
+# install_cabal_install "1.24.0.2" "$CACHE_DIR/bin"
+install_cabal_install() {
+  CI_FNAME="cabal-install-$CABAL_INSTALL_VERSION-x86_64-unknown-linux.tar.gz"
+  CI_URL="https://www.haskell.org/cabal/release/cabal-install-$CABAL_INSTALL_VERSION/$CI_FNAME"
+
+  silently pushd "$CACHE_DIR"
+
+  if [ ! -f "$CI_FNAME" ]; then
+    silently curl -sS -L -O "$CI_URL"
+  fi
+  
+  silently tar xvf "$CI_FNAME"
+  TARGET="$(find . -name 'cabal' -type f)" # because the executable could be distributed in different ways (depending on version)
+
+  if [ ! -z "$TARGET" ]; then
+    silently rm -rf "$2/cabal" # delete the symlink to previous version
+    silently cp "$TARGET" "$2/cabal-$1" # copy the executable into place
+    silently ln -s "$2/cabal-$1" "$2/cabal" # link to the new version
+  fi
+  
+  silently popd
+}
+
+#
+# $CACHE_DIR/
+#   dist/ # where build products are stored
+#   ghc-$GHC_VERSION/ # where GHC is installed
+#   gmp-$GHC_VERSION/ # where libgmp is installed
+#   bin/ # added to PATH for execution of this script
+#
+# $BUILD_DIR/
+#   product/ # contains all products from building your app. Executables made available in $PATH
+#   ... # everything else you pushed to Heroku
+
+bp_sublog "Using GHC $GHC_VERSION"
+bp_sublog "Using cabal-install $CABAL_INSTALL_VERSION"
+bp_sublog "Using GMP $GMP_VERSION"
+
+bp_log "Creating directory structure"
+silently mkdir -p "$CACHE_DIR/bin"
+silently mkdir -p "$CACHE_DIR/dist"
+silently rm -rf "$BUILD_DIR/dist"
+
+silently mkdir -p "$BUILD_DIR/product"
+silently ln -s "$CACHE_DIR/dist" "$BUILD_DIR/dist"
+# $CACHE_DIR/ghc-* is created by install_ghc
+# $CACHE_DIR/gmp-* is created by install_ghc
+
+mkdir -p $BUILD_DIR/.profile.d
+cat <<EOF >$BUILD_DIR/.profile.d/000_product_path.sh
+export PATH="product/bin:\$PATH" # add compiled executables to path
+export LANG=en_US.UTF-8
+export LIBRARY_PATH="product/lib/x86_64-linux-gnu:product/lib:\$LIBRARY_PATH"
+export INCLUDE_PATH="product/include:product/include/x86_64-linux-gnu:\$INCLUDE_PATH"
+export LD_LIBRARY_PATH="\$LIBRARY_PATH"
+export C_INCLUDE_PATH="\$INCLUDE_PATH:\$C_INCLUDE_PATH"
+EOF
+
+bp_log "Loading environment variables"
+
+bp_sublog "Loading Heroku configuration variables"
+load_env "$ENV_DIR" "GHC_VERSION"
+load_env "$ENV_DIR" "HAPPY_VERSION"
+load_env "$ENV_DIR" "ALEX_VERSION"
+load_env "$ENV_DIR" "CABAL_INSTALL_VERSION"
+load_env "$ENV_DIR" "GMP_VERSION"
+load_env "$ENV_DIR" "REINSTALL_DEPENDENCIES"
+
+bp_sublog "Setting \$PATH"
+export GHC_HOME="$CACHE_DIR/ghc-$GHC_VERSION"
+export PATH="$GHC_HOME/bin:$CACHE_DIR/bin:$PATH"
+
+bp_sublog "Setting linker and include paths"
+export LANG=en_US.UTF-8
+export LIBRARY_PATH="$CACHE_DIR/gmp-$GMP_VERSION/lib/x86_64-linux-gnu:$CACHE_DIR/gmp-$GMP_VERSION/lib:$LIBRARY_PATH"
+export INCLUDE_PATH="$CACHE_DIR/gmp-$GMP_VERSION/include:$CACHE_DIR/gmp-$GMP_VERSION/include/x86_64-linux-gnu:$INCLUDE_PATH"
+export LD_LIBRARY_PATH="$LIBRARY_PATH"
+export C_INCLUDE_PATH="$INCLUDE_PATH:$C_INCLUDE_PATH"
+
+if [ ! -d "$CACHE_DIR/gmp-$GMP_VERSION" ]; then
+  bp_log "Installing GMP"
+  install_libgmp "$GMP_VERSION" "$CACHE_DIR/gmp-$GMP_VERSION"
+fi
+
+if [ ! -d "$GHC_HOME" ]; then
+  bp_log "Installing GHC"
+  install_ghc "$GHC_VERSION" "$GHC_HOME"
+fi
+
+if [ ! -f "$CACHE_DIR/bin/cabal-$CABAL_INSTALL_VERSION" ]; then
+  bp_log "Installing cabal-install"
+  install_cabal_install "$CABAL_INSTALL_VERSION" "$CACHE_DIR/bin"
+fi
+
+PACKAGE_DB="$CACHE_DIR/ghc-$GHC_VERSION/lib/ghc-$GHC_VERSION/package.conf.d"
+ROOT_PACKAGE_DIR="$CACHE_DIR/ghc-$GHC_VERSION/bin"
+
+# TODO: have this cached or optimized
+bp_log "Loading Cabal package database"
+silently cabal update
+
+if [ ! -f "$(which happy)" ]; then
+  bp_log "Installing Happy"
+  silently cabal install "happy-$HAPPY_VERSION" --enable-executable-stripping --disable-documentation --package-db="$PACKAGE_DB" --prefix="$CACHE_DIR/ghc-$GHC_VERSION"
+fi
+
+if [ ! -f "$(which alex)" ]; then
+  bp_log "Installing Alex"
+  silently cabal install "alex-$ALEX_VERSION" --enable-executable-stripping --disable-documentation --package-db="$PACKAGE_DB" --prefix="$CACHE_DIR/ghc-$GHC_VERSION"
+fi
+
+cd "$BUILD_DIR"
+
+bp_log "Installing app dependencies"
+cabal install --dependencies-only --enable-executable-stripping --disable-documentation --prefix="$ROOT_PACKAGE_DIR" --package-db="$PACKAGE_DB" | indent
+
+bp_log "Installing app"
+cabal install --enable-executable-stripping --disable-documentation --prefix="$BUILD_DIR/product" --package-db="$PACKAGE_DB" | indent
+rm -rf dist/ # remove symlink that will be broken.
+rm *.cabal   # remove .cabal file from the slug
+find . -name '*.hs' -type f -delete # remove all compiled source code from the slug
