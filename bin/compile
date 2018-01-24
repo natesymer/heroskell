@@ -104,7 +104,7 @@ install_cabal_install() {
   fi
   
   silently tar xvf "$CI_FNAME"
-  TARGET="$(find . -name 'cabal' -type f)" # because the executable could be distributed in different ways (depending on version)
+  TARGET="$(find . -name 'cabal' -type f -executable)" # because the executable could be distributed in different ways (depending on version)
 
   if [ ! -z "$TARGET" ]; then
     silently rm -rf "$2/cabal" # delete the symlink to previous version
