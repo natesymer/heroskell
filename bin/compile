@@ -53,6 +53,8 @@ install_libgmp() {
     silently rm -rf "$2"
   fi
   
+  silently pushd "$CACHE_DIR/tmp/"
+
   local FNAME="gmp-$1.tar.xz"
   local URL="https://gmplib.org/download/gmp/$FNAME"
   
@@ -67,6 +69,8 @@ install_libgmp() {
   
   silently rm "$FNAME"
   silently rm -rf gmp-*
+
+  silently popd
 }
 
 # install_ghc "8.0.2" "/app/ghc"
@@ -75,6 +79,8 @@ install_ghc() {
     silently rm -rf "$2"
   fi
   
+  silently pushd "$CACHE_DIR/tmp/"
+
   GHC_FILENAME="ghc-$1-x86_64-deb8-linux.tar.xz"
   GHC_URL="https://www.haskell.org/ghc/dist/$1/$GHC_FILENAME"
 
@@ -90,6 +96,8 @@ install_ghc() {
 
   silently rm "$GHC_FILENAME"
   silently rm -rf "ghc-$GHC_VERSION"
+
+  silently popd
 }
 
 # install_cabal_install "1.24.0.2" "$CACHE_DIR/bin"
@@ -97,7 +105,7 @@ install_cabal_install() {
   CI_FNAME="cabal-install-$CABAL_INSTALL_VERSION-x86_64-unknown-linux.tar.gz"
   CI_URL="https://www.haskell.org/cabal/release/cabal-install-$CABAL_INSTALL_VERSION/$CI_FNAME"
 
-  silently pushd "$CACHE_DIR"
+  silently pushd "$CACHE_DIR/tmp/"
 
   if [ ! -f "$CI_FNAME" ]; then
     silently curl -sS -L -O "$CI_URL"
@@ -117,6 +125,7 @@ install_cabal_install() {
 
 #
 # $CACHE_DIR/
+#   tmp/ # where GHC, cabal, and GMP are downloaded to. Only exists during builds
 #   dist/ # where build products are stored
 #   ghc-$GHC_VERSION/ # where GHC is installed
 #   gmp-$GHC_VERSION/ # where libgmp is installed
@@ -171,6 +180,8 @@ export INCLUDE_PATH="$CACHE_DIR/gmp-$GMP_VERSION/include:$CACHE_DIR/gmp-$GMP_VER
 export LD_LIBRARY_PATH="$LIBRARY_PATH"
 export C_INCLUDE_PATH="$INCLUDE_PATH:$C_INCLUDE_PATH"
 
+silently mkdir -p "$CACHE_DIR/tmp"
+
 if [ ! -d "$CACHE_DIR/gmp-$GMP_VERSION" ]; then
   bp_log "Installing GMP"
   install_libgmp "$GMP_VERSION" "$CACHE_DIR/gmp-$GMP_VERSION"
@@ -202,6 +213,8 @@ if [ ! -f "$(which alex)" ]; then
   bp_log "Installing Alex"
   silently cabal install "alex-$ALEX_VERSION" --enable-executable-stripping --disable-documentation --package-db="$PACKAGE_DB" --prefix="$CACHE_DIR/ghc-$GHC_VERSION"
 fi
+
+silently rm -rf "$CACHE_DIR/tmp/"
 
 cd "$BUILD_DIR"
 
